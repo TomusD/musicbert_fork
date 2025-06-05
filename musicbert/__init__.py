@@ -7,5 +7,8 @@ from musicbert.musicbert_with_extra_conditioning import *  # isort:skip
 from ._musicbert import *
 
 #(Triantafyllou) Custom patch for the trainer
-from .optimizer_patch import patch_trainer
-patch_trainer()
+from fairseq.trainer import Trainer 
+from .custom_optimizer import custom_trainer
+custom_trainer(Trainer)
+# from .optimizer_patch import patch_trainer
+# patch_trainer()

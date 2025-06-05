@@ -46,20 +46,11 @@ def patch_trainer():
             else:
                 LOGGER.info("LoRA parameters already in the optimizer group.")
 
-
-        # Append them into the first param_group
-        # if lora_params:
-        #     torch_optim.param_groups[0]["params"].extend(lora_params)
-
         # Collect all of your VeRA parameters
         vera_params = [
             p for n, p in self.model.named_parameters()
             if "vera_" in n and p.requires_grad
         ]
-
-        # Append them into the first param_group
-        # if vera_params:
-        #     torch_optim.param_groups[0]["params"].extend(vera_params)
 
         if vera_params:
             LOGGER.info(f"Adding {len(vera_params)} VeRA parameters to optimizer group.")

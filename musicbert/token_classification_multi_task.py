@@ -519,12 +519,14 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
         )
         parser.add_argument("--lora-rank",   type=int, default=0,help="LoRA rank (0 = no LoRA)")
         parser.add_argument("--lora-alpha",  type=int, default=16, help="LoRA scaling (alpha)")
+        parser.add_argument("--lora-lr", type=float, default=0.0, help="LoRA learning rate (default: 0.0 = use base LR)")
         parser.add_argument("--lora-dropout",type=float, default=0.0, help="LoRA dropout probability")
         parser.add_argument("--rslora", action="store_true", help="use rsLoRA")
         parser.add_argument("--dora", action="store_true", help="use DoRA")
         parser.add_argument( "--use-pefts", action="store_true",
                             help="use patched forward for LoRA (default: False, use fairseq's default forward pass)")
         parser.add_argument("--vera-rank", type=int, default=0, help="VeRA rank (0 = no VeRA)")
+        parser.add_argument("--vera-lr", type=float, default=0.0, help="VeRA learning rate (default: 0.0 = use base LR)")
         parser.add_argument("--vera-dropout", type=float, default=0.0, help="VeRA dropout probability")
 
     def __init__(self, args, data_dictionary, label_dictionaries):
