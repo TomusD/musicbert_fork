@@ -68,6 +68,8 @@ parser.add_argument("--data-bin-dir", "-d", required=True)
 parser.add_argument("--architecture", "-a")
 parser.add_argument("--wandb-project", "-W")
 parser.add_argument("--total-updates", "-u", type=int, default=TOTAL_UPDATES)
+#(Triantafyllou) max-run-updates is used
+parser.add_argument("--max-run-updates", type=int, help="Absolute maximum training updates for the entire run")
 parser.add_argument("--warmup-updates", "-w", type=int, default=WARMUP_UPDATES)
 parser.add_argument("--update-batch-size", type=int, default=UPDATE_BATCH_SIZE)
 parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
@@ -253,6 +255,7 @@ else:
                 "--optimizer adam",
                 "--adam-betas (0.9,0.98)",
                 "--adam-eps 1e-6",
+                #(Triantafyllou) added clip-norm
                 "--clip-norm 0.0",
                 "--log-format simple",
                 "--find-unused-parameters",
@@ -308,8 +311,8 @@ else:
                     f"--total-num-update {args.total_updates} "
                     if args.lr_scheduler == "polynomial_decay"
                     else ""
-                )
-                + f"--max-update {args.total_updates}",
+                ) # (Triantafyllou) max-update used
+                + f"--max-update {args.max_run_updates if args.max_run_updates is not None else args.total_updates}", 
                 "--no-epoch-checkpoints",
             ]
         ).split()

@@ -32,7 +32,10 @@ from torch import nn
 
 import musicbert.monkeypatch_load_checkpoint
 import musicbert.state_dict_patch
+import musicbert.pefts_utils.MHA_forward_patch as MHA_forward_patch
 from musicbert.token_classification import RobertaSequenceTaggingHead
+#from musicbert.PeFTs import inject_lora
+from peft import get_peft_model, VeraConfig, LoraConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -122,6 +125,14 @@ class MultiTaskSequenceTaggingCriterion(FairseqCriterion):
         self.example_network_inputs_path = self.task.args.example_network_inputs_path
         self.target_dropout = self.task.args.target_dropout
         self.use_liebel_loss = self.task.args.liebel_loss
+
+        # (Triantafulloy) ISNS weighting
+        self.use_isns_weights = hasattr(self.task.args, 'use_isns_weights') and self.task.args.use_isns_weights
+        if self.use_isns_weights:
+            self.class_weights_list = self.task.class_weights_list
+        else:
+            self.class_weights_list = None
+
         if self.remaining_inputs_to_save:
             assert (
                 self.example_network_inputs_path is not None
@@ -138,6 +149,7 @@ class MultiTaskSequenceTaggingCriterion(FairseqCriterion):
         parser.add_argument('--example-network-inputs-path', type=str, default=None)
         parser.add_argument('--target-dropout', type=float, default=0.0)
         parser.add_argument("--liebel-loss", action="store_true", help="use multi-task loss from Liebel and Korner 2018")
+        parser.add_argument("--use-isns-weights",action="store_true",help="use ISNS weighting for the loss function",)
         # fmt: on
 
     def save_inputs(self, sample):
@@ -207,11 +219,18 @@ class MultiTaskSequenceTaggingCriterion(FairseqCriterion):
         for i, logits in enumerate(multi_logits):
             targets = sample[f"target{i}"].view(-1)
             logits = logits.view(-1, logits.size(-1))
+
+            # (Triantafulloy) ISNS weighting
+            current_weights = None
+            if self.use_isns_weights and self.class_weights_list:
+                current_weights = self.class_weights_list[i].to(logits.device)
+
             this_loss = F.nll_loss(
                 F.log_softmax(logits, dim=-1, dtype=torch.float32),
                 targets,
                 ignore_index=self.pad_idx,
                 reduction="sum",
+                weight=current_weights
             )
             losses.append(this_loss)
 
@@ -498,6 +517,15 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             help="provide the name of targets for which we should log f1/etc. "
             "for each label individually",
         )
+        parser.add_argument("--lora-rank",   type=int, default=0,help="LoRA rank (0 = no LoRA)")
+        parser.add_argument("--lora-alpha",  type=int, default=16, help="LoRA scaling (alpha)")
+        parser.add_argument("--lora-dropout",type=float, default=0.0, help="LoRA dropout probability")
+        parser.add_argument("--rslora", action="store_true", help="use rsLoRA")
+        parser.add_argument("--dora", action="store_true", help="use DoRA")
+        parser.add_argument( "--use-pefts", action="store_true",
+                            help="use patched forward for LoRA (default: False, use fairseq's default forward pass)")
+        parser.add_argument("--vera-rank", type=int, default=0, help="VeRA rank (0 = no VeRA)")
+        parser.add_argument("--vera-dropout", type=float, default=0.0, help="VeRA dropout probability")
 
     def __init__(self, args, data_dictionary, label_dictionaries):
         if args.msdebug:
@@ -513,7 +541,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
             sys.excepthook = custom_excepthook
         super().__init__(args)
-
+        MHA_forward_patch.set_use_pefts(args.use_pefts)
         self.dictionary = data_dictionary
         self._label_dictionaries = tuple(label_dictionaries)
 
@@ -530,6 +558,34 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
         args.tokens_per_sample = self._max_positions  # tuple[int, int] ?
 
         self.args = args
+
+        # (Triantafulloy) Calculate class weights if ISNS weighting is enabled
+        self.class_weights_list = []
+        if self.args.use_isns_weights:
+            for i, label_dict in enumerate(self._label_dictionaries):
+
+                # Determine the number of output classes for this specific task's model head
+                num_output_classes_for_task_head = self.args.num_classes[i] + label_dict.nspecial
+                weights = torch.ones(num_output_classes_for_task_head, dtype=torch.float)
+
+                for class_idx in range(num_output_classes_for_task_head):
+                    if class_idx == label_dict.pad_index:
+                        weights[class_idx] = 0.0
+                    elif class_idx < len(label_dict.symbols):
+                        count = label_dict.count[class_idx]
+                        # ISNS: W = 100 * 1/sqrt(N_c). Treat count=0 as count=1 to avoid div by zero.
+                        weights[class_idx] = 100.0 / torch.sqrt(torch.tensor(max(1, count), dtype=torch.float))
+                    else:
+                        weights[class_idx] = 1.0
+                self.class_weights_list.append(weights)
+                # --- DEBUG PRINT STATEMENT ---
+                if self.args.use_isns_weights:
+                    LOGGER.info(f"DEBUG: Task {i}:")
+                    LOGGER.info(f"Number of output classes: {num_output_classes_for_task_head}")
+                    LOGGER.info(f"Total {len(weights)} weights")
+                    LOGGER.info(f"Calculated ISNS weights: {weights[:20]}")
+                # --- END DEBUG ---
+
         self.num_targets = len(args.num_classes)
         if args.target_names is None:
             target_name_path = os.path.join(args.data, "target_names.json")
@@ -733,15 +789,67 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
         model = models.build_model(args, self)
         self._build_model_freeze_helper(args, model)
+        target_modules=["q_proj","k_proj","v_proj","out_proj"]
+
+        # (Triantafulloy) Inject LoRA adapters
+        if args.lora_rank > 0 and not args.vera_rank:
+            lora_config = LoraConfig(
+                r=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                target_modules=target_modules, 
+                use_rslora=args.rslora,
+                use_dora=args.dora,
+            )
+            # Debugging which LoRA architecture is being used and how many trainable parameters
+            if args.rslora:
+                LOGGER.info("Using rsLoRA")
+            if args.dora:
+                LOGGER.info("Using DoRA")
+            if args.lora_rank > 0 and not args.rslora and not args.dora:
+                LOGGER.info("Using Vanilla LoRA ") 
+            model.encoder.sentence_encoder = get_peft_model(model.encoder.sentence_encoder, lora_config)
+            model.encoder.sentence_encoder.print_trainable_parameters()
+            LOGGER.info("LoRA trainable parameters:")
+            for name, param in model.named_parameters():
+                if param.requires_grad or "lora_" in name:
+                    LOGGER.info(f"{name} - {param.shape}")
+
+        # (Triantafulloy) Inject VeRA adapters
+        if args.vera_rank > 0 and not args.lora_rank:
+            vera_config = VeraConfig(
+                r=args.vera_rank,
+                target_modules=target_modules,
+                vera_dropout=args.vera_dropout,
+            )
+            model.encoder.sentence_encoder = get_peft_model(model.encoder.sentence_encoder, vera_config)
+            # Debugging VeRA layers and trainable parameters
+            LOGGER.info("Using VeRA")
+            model.encoder.sentence_encoder.print_trainable_parameters()
+            vera_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
+            LOGGER.info(f"VeRA trainable parameters for the whole model: {len(vera_param_names)} ")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
+            vera_frozen_param_names = [n for n, _ in model.named_buffers() if "vera_" in n]
+            LOGGER.info(f"Found {len(vera_frozen_param_names)} VeRA frozen parameters:")
+            for name in vera_frozen_param_names:
+                LOGGER.info(name)
+
+        # Logging trainable parameters after all PeFTs modifications
+        LOGGER.info("Final trainable parameters in the model:")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                LOGGER.info(f"{name} - {param.shape} - Trainable")
+
+
         num_classes = self._build_model_num_classes_helper()
 
         # We register the sequence tagging head after any freezing so that it won't
         #   be frozen
 
         model.register_multitask_sequence_tagging_head(
-            getattr(
-                args, "classification_head_name", "sequence_multitask_tagging_head"
-            ),
+            getattr(args, "classification_head_name", "sequence_multitask_tagging_head"),
             num_classes=num_classes,
             sequence_tagging=True,
         )
