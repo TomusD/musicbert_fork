@@ -32,9 +32,9 @@ from torch import nn
 
 import musicbert.monkeypatch_load_checkpoint
 import musicbert.state_dict_patch
-import musicbert.pefts_utils.MHA_forward_patch as MHA_forward_patch
+import musicbert.PeFTs.MHA_forward_patch as MHA_forward_patch
 from musicbert.token_classification import RobertaSequenceTaggingHead
-#from musicbert.PeFTs import inject_lora
+from musicbert.PeFTs.PeFTs import inject_lora, inject_vera
 from peft import get_peft_model, VeraConfig, LoraConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -795,14 +795,26 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
         # (Triantafulloy) Inject LoRA adapters
         if args.lora_rank > 0 and not args.vera_rank:
-            lora_config = LoraConfig(
-                r=args.lora_rank,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=args.lora_dropout,
-                target_modules=target_modules, 
-                use_rslora=args.rslora,
-                use_dora=args.dora,
+            replacements_made = inject_lora(
+                module=model.encoder.sentence_encoder,
+                rank=args.lora_rank,
+                alpha=args.lora_alpha,
+                dropout=args.lora_dropout,
+                rslora=args.rslora,
+                dora=args.dora,
+                target_modules=target_modules
             )
+
+            LOGGER.info(f"Made {replacements_made} LoRA replacements.")
+
+            # Unfreeze LoRA parameters so the optimizer can find them
+            lora_params_unfrozen = 0
+            for name, param in model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad = True
+                    lora_params_unfrozen += 1
+            LOGGER.info(f"Unfroze {lora_params_unfrozen} LoRA parameters.")
+
             # Debugging which LoRA architecture is being used and how many trainable parameters
             if args.rslora:
                 LOGGER.info("Using rsLoRA")
@@ -810,8 +822,6 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 LOGGER.info("Using DoRA")
             if args.lora_rank > 0 and not args.rslora and not args.dora:
                 LOGGER.info("Using Vanilla LoRA ") 
-            model.encoder.sentence_encoder = get_peft_model(model.encoder.sentence_encoder, lora_config)
-            model.encoder.sentence_encoder.print_trainable_parameters()
             LOGGER.info("LoRA trainable parameters:")
             for name, param in model.named_parameters():
                 if param.requires_grad or "lora_" in name:
@@ -819,21 +829,53 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
         # (Triantafulloy) Inject VeRA adapters
         if args.vera_rank > 0 and not args.lora_rank:
-            vera_config = VeraConfig(
-                r=args.vera_rank,
-                target_modules=target_modules,
-                vera_dropout=args.vera_dropout,
-            )
-            model.encoder.sentence_encoder = get_peft_model(model.encoder.sentence_encoder, vera_config)
-            # Debugging VeRA layers and trainable parameters
             LOGGER.info("Using VeRA")
-            model.encoder.sentence_encoder.print_trainable_parameters()
+
+            # VeRA needs 2 frozen matrices A and B so I initialize them here
+            hidden_size = model.encoder.sentence_encoder.layers[0].self_attn.embed_dim
+
+            # Initialize the VeRA tensors A and B
+            vera_A_tensor = torch.empty(args.vera_rank, hidden_size)
+            vera_B_tensor = torch.empty(hidden_size, args.vera_rank)
+
+            # Use Kaiming uniform initialization for VeRA matrices since worked best in the paper
+            torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
+            torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
+
+            # Create the VeRA frozen matrices
+            vera_A_param_dict = nn.ParameterDict({
+                "default": nn.Parameter(vera_A_tensor, requires_grad=False)
+            })
+            vera_B_param_dict = nn.ParameterDict({
+                "default": nn.Parameter(vera_B_tensor, requires_grad=False)
+            })
+            LOGGER.info(f"Created shared VeRA matrices within ModuleDict: A{tuple(vera_A_tensor.shape)}, B{tuple(vera_B_tensor.shape)}")
+
+            replacements_made = inject_vera(
+                module=model.encoder.sentence_encoder,
+                vera_A=vera_A_param_dict,
+                vera_B=vera_B_param_dict,
+                rank=args.vera_rank,
+                dropout=args.vera_dropout,
+                target_modules=target_modules
+            )
+
+            # Unfreeze only the trainable parts of VeRA
+            vera_params_unfrozen = 0
+            for name, param in model.named_parameters():
+                if "vera_lambda_" in name:
+                    param.requires_grad = True
+                    vera_params_unfrozen += 1
+            LOGGER.info(f"Unfroze {vera_params_unfrozen} VeRA trainable parameters.")
+
+            # Debugging VeRA layers
             vera_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
-            LOGGER.info(f"VeRA trainable parameters for the whole model: {len(vera_param_names)} ")
+            LOGGER.info(f"VeRA trainable parameters : {len(vera_param_names)} ")
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
-            vera_frozen_param_names = [n for n, _ in model.named_buffers() if "vera_" in n]
+
+            vera_frozen_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
             LOGGER.info(f"Found {len(vera_frozen_param_names)} VeRA frozen parameters:")
             for name in vera_frozen_param_names:
                 LOGGER.info(name)

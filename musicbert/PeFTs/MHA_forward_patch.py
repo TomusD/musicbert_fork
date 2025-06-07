@@ -2,7 +2,7 @@
 (Triantafulloy)
 Patch the forward method of MultiheadAttention to support vanilla LoRA and other PEFTs
 Because fairseq uses F.multi_head_attention_forward and does not call the 
-forward method of MultiheadAttention lora's forward method neever gets called
+forward method of MultiheadAttention lora's forward method never gets called
 """
 
 
