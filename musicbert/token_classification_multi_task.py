@@ -831,30 +831,30 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
         if args.vera_rank > 0 and not args.lora_rank:
             LOGGER.info("Using VeRA")
 
-            # VeRA needs 2 frozen matrices A and B so I initialize them here
-            hidden_size = model.encoder.sentence_encoder.layers[0].self_attn.embed_dim
+            # # VeRA needs 2 frozen matrices A and B so I initialize them here
+            # hidden_size = model.encoder.sentence_encoder.layers[0].self_attn.embed_dim
 
-            # Initialize the VeRA tensors A and B
-            vera_A_tensor = torch.empty(args.vera_rank, hidden_size)
-            vera_B_tensor = torch.empty(hidden_size, args.vera_rank)
+            # # Initialize the VeRA tensors A and B
+            # vera_A_tensor = torch.empty(args.vera_rank, hidden_size)
+            # vera_B_tensor = torch.empty(hidden_size, args.vera_rank)
 
-            # Use Kaiming uniform initialization for VeRA matrices since worked best in the paper
-            torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
-            torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
+            # # Use Kaiming uniform initialization for VeRA matrices since worked best in the paper
+            # torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
+            # torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
 
-            # Create the VeRA frozen matrices
-            vera_A_param_dict = nn.ParameterDict({
-                "default": nn.Parameter(vera_A_tensor, requires_grad=False)
-            })
-            vera_B_param_dict = nn.ParameterDict({
-                "default": nn.Parameter(vera_B_tensor, requires_grad=False)
-            })
-            LOGGER.info(f"Created shared VeRA matrices within ModuleDict: A{tuple(vera_A_tensor.shape)}, B{tuple(vera_B_tensor.shape)}")
+            # # Create the VeRA frozen matrices
+            # vera_A_param_dict = nn.ParameterDict({
+            #     "default": nn.Parameter(vera_A_tensor, requires_grad=False)
+            # })
+            # vera_B_param_dict = nn.ParameterDict({
+            #     "default": nn.Parameter(vera_B_tensor, requires_grad=False)
+            # })
+            # LOGGER.info(f"Created shared VeRA matrices within ModuleDict: A{tuple(vera_A_tensor.shape)}, B{tuple(vera_B_tensor.shape)}")
 
             replacements_made = inject_vera(
                 module=model.encoder.sentence_encoder,
-                vera_A=vera_A_param_dict,
-                vera_B=vera_B_param_dict,
+                #vera_A=vera_A_param_dict,
+                #vera_B=vera_B_param_dict,
                 rank=args.vera_rank,
                 dropout=args.vera_dropout,
                 target_modules=target_modules
@@ -875,7 +875,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
-            vera_frozen_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
+            vera_frozen_param_names = [n for n, p in model.named_parameters() if "vera_" in n and not p.requires_grad]
             LOGGER.info(f"Found {len(vera_frozen_param_names)} VeRA frozen parameters:")
             for name in vera_frozen_param_names:
                 LOGGER.info(name)
@@ -897,6 +897,20 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             num_classes=num_classes,
             sequence_tagging=True,
         )
+
+        # # Composite optimizer groups for base and PeFTs parameters
+        # LOGGER.info("Assigning parameters to optimizer groups ('base' and 'vera')...")
+        # for name, p in model.named_parameters():
+        #     if not p.requires_grad:
+        #         continue
+            
+        #     # Assign trainable parameters to the each group
+        #     if "vera_" in name:
+        #         p.param_group = "vera"
+        #     elif "lora_" in name:
+        #         p.param_group = "lora"
+        #     else:
+        #         p.param_group = "base"
 
         return model
 

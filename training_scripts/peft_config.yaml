@@ -1,0 +1,36 @@
+# # This top-level scheduler tells the trainer to let the per-group schedulers take control.
+# lr_scheduler:
+#   _name: pass_through
+
+# optimizer:
+#   _name: composite
+#   groups:
+#     # Group for your classification heads and other base parameters
+#     base:
+#       optimizer:
+#         _name: adam
+#         adam_betas: "(0.9,0.98)"
+#         adam_eps: 1e-06
+#         weight_decay: 0.0
+#       lr_scheduler:
+#         _name: polynomial_decay
+#         warmup_updates: 2500
+#         lr: [0.00025]
+#         total_num_update: 50000
+#         # NOTE: --end-learning-rate is a trainer-level arg, often passed to the scheduler.
+#         # Check if your polynomial_decay scheduler uses it. If so, you'd add it here:
+#         # end_learning_rate: 5.0e-06 
+
+#     # Group for your VeRA parameters
+#     vera:
+#       optimizer:
+#         _name: adam
+#         adam_betas: "(0.9,0.98)"
+#         adam_eps: 1e-06
+#         weight_decay: 0.0
+#       lr_scheduler:
+#         _name: polynomial_decay
+#         warmup_updates: 2500
+#         lr: [0.01]
+#         total_num_update: 50000
+#         # end_learning_rate: 5.0e-06 # Add here too if needed
