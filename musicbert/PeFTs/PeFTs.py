@@ -73,7 +73,7 @@ def inject_vera(
             )
             
             if should_wrap:
-                # --- CREATE UNIQUE MATRICES FOR THIS SPECIFIC LAYER ---
+                # Create unique VeraLinear layer with its own A and B
                 in_features = child.in_features
                 
                 # 1. Create the random tensors

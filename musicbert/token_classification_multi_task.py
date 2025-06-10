@@ -35,7 +35,7 @@ import musicbert.state_dict_patch
 import musicbert.PeFTs.MHA_forward_patch as MHA_forward_patch
 from musicbert.token_classification import RobertaSequenceTaggingHead
 from musicbert.PeFTs.PeFTs import inject_lora, inject_vera
-from peft import get_peft_model, VeraConfig, LoraConfig
+from musicbert.PeFTs.svft_layers import LinearWithSVFT, get_target_modules_list, create_and_replace_modules
 
 LOGGER = logging.getLogger(__name__)
 
@@ -528,6 +528,10 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
         parser.add_argument("--vera-rank", type=int, default=0, help="VeRA rank (0 = no VeRA)")
         parser.add_argument("--vera-lr", type=float, default=0.0, help="VeRA learning rate (default: 0.0 = use base LR)")
         parser.add_argument("--vera-dropout", type=float, default=0.0, help="VeRA dropout probability")
+        parser.add_argument("--use-svft", action="store_true", help="use SVFT layers instead of linear layers (default: False)")
+        parser.add_argument("--svft-off-diag", type=int, default=1, help="number of off-diagonals to use in SVFT layers for matrix M (default: 1)")
+        parser.add_argument("--svft-pattern", type=str, default="banded", choices=["banded", "random", "top_k"], help="Sparsity pattern for SVFT's M matrix. (Using banded with off_diag=1 simulates SVFT-plain)")
+        parser.add_argument("--svft-rank", type=int, default=768, help="SVFT rank (default full rank)")
 
     def __init__(self, args, data_dictionary, label_dictionaries):
         if args.msdebug:
@@ -791,10 +795,10 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
         model = models.build_model(args, self)
         self._build_model_freeze_helper(args, model)
-        target_modules=["q_proj","k_proj","v_proj","out_proj"]
 
         # (Triantafulloy) Inject LoRA adapters
         if args.lora_rank > 0 and not args.vera_rank:
+            lora_target_modules=["q_proj","k_proj","v_proj","out_proj", "fc1","fc2"]
             replacements_made = inject_lora(
                 module=model.encoder.sentence_encoder,
                 rank=args.lora_rank,
@@ -802,7 +806,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 dropout=args.lora_dropout,
                 rslora=args.rslora,
                 dora=args.dora,
-                target_modules=target_modules
+                target_modules=lora_target_modules
             )
 
             LOGGER.info(f"Made {replacements_made} LoRA replacements.")
@@ -829,6 +833,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
         # (Triantafulloy) Inject VeRA adapters
         if args.vera_rank > 0 and not args.lora_rank:
+            vera_target_modules = ["q_proj", "k_proj", "v_proj", "out_proj"]
             LOGGER.info("Using VeRA")
 
             # # VeRA needs 2 frozen matrices A and B so I initialize them here
@@ -857,7 +862,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 #vera_B=vera_B_param_dict,
                 rank=args.vera_rank,
                 dropout=args.vera_dropout,
-                target_modules=target_modules
+                target_modules=vera_target_modules
             )
 
             # Unfreeze only the trainable parts of VeRA
@@ -870,22 +875,64 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
 
             # Debugging VeRA layers
             vera_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
-            LOGGER.info(f"VeRA trainable parameters : {len(vera_param_names)} ")
+            LOGGER.info(f"VeRA trainable parameters: {len(vera_param_names)} ")
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
             vera_frozen_param_names = [n for n, p in model.named_parameters() if "vera_" in n and not p.requires_grad]
-            LOGGER.info(f"Found {len(vera_frozen_param_names)} VeRA frozen parameters:")
+            LOGGER.info(f"VeRA frozen parameters: {len(vera_frozen_param_names)} ")
             for name in vera_frozen_param_names:
                 LOGGER.info(name)
+
+        # (Triantafulloy) Inject SVFT Layers
+        if args.use_svft:
+            svft_target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
+            LOGGER.info(f"Applying SVFT with pattern='{args.svft_pattern}', rank={args.svft_rank}, off_diagonals={args.svft_off_diag}")
+            
+            # Use the helper function from svft.py to get the full paths to these modules
+            target_modules_list = get_target_modules_list(model.encoder.sentence_encoder, svft_target_modules)
+            LOGGER.info(f"Found {len(target_modules_list)} target modules to replace with SVFT layers.")
+
+            # Define a function that creates a new SVFT layer
+            def create_svft_fn(original_linear_layer):
+                return LinearWithSVFT(
+                    linear=original_linear_layer,
+                    off_diag=args.svft_off_diag,
+                    pattern=args.svft_pattern,
+                    rank=args.svft_rank,
+                    fill_orthonormal=False
+                )
+            
+            # Use the helper function from svft.py to perform the replacement
+            create_and_replace_modules(model.encoder.sentence_encoder, target_modules_list, create_svft_fn)
+
+            # Debugging SVFT layers
+            trainable_svft_params = 0
+            for name, param in model.named_parameters():
+                if "svft_" in name and param.requires_grad:
+                    trainable_svft_params += 1
+            LOGGER.info(f"SVFT injection complete. Found {trainable_svft_params} trainable SVFT parameters.")
+
+            svft_param_names = [n for n, _ in model.named_parameters() if "svft_" in n]
+            LOGGER.info(f"SVFT trainable parameters: {len(svft_param_names)} ")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
+
+            svft_frozen_param_names = [n for n, p in model.named_parameters() if "svft_" in n and not p.requires_grad]
+            LOGGER.info(f"SVFT frozen parameters: {len(svft_frozen_param_names)}")
+            for name in svft_frozen_param_names:
+                LOGGER.info(name)
+
+
+
 
         # Logging trainable parameters after all PeFTs modifications
         LOGGER.info("Final trainable parameters in the model:")
         for name, param in model.named_parameters():
             if param.requires_grad:
                 LOGGER.info(f"{name} - {param.shape} - Trainable")
-
 
         num_classes = self._build_model_num_classes_helper()
 

@@ -256,7 +256,7 @@ else:
                 "--adam-betas (0.9,0.98)",
                 "--adam-eps 1e-6",
                 #(Triantafyllou) added clip-norm
-                "--clip-norm 1.0",
+                "--clip-norm 0.0",
                 "--log-format simple",
                 "--find-unused-parameters",
                 # TODO: (Malcolm 2023-08-29) update best checkpoint metric (f1?)
