@@ -2,9 +2,8 @@
 (Triantafulloy)
 Patch the forward method of MultiheadAttention to support vanilla LoRA and other PEFTs
 Because fairseq uses F.multi_head_attention_forward and does not call the 
-forward method of MultiheadAttention lora's forward method never gets called
+forward method of MultiheadAttention, lora's forward method never gets called
 """
-
 
 import torch
 from fairseq import utils
@@ -68,8 +67,6 @@ def patched_forward(
 
         # (Triantafulloy)
         # Introduce a flag to force Python path
-        # Set this to True when you want LoRA for q,k,v,o to work
-        # use_pefts = True
 
         if (
             not _USE_PEFTS and # (Triantafulloy) Added this flag

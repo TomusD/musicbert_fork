@@ -3,7 +3,7 @@ import logging
 LOGGER = logging.getLogger(__name__)
 
 from fairseq.trainer import Trainer
-
+# TODO: Make this optional.
 def patch_trainer():
 
     # Check if the Trainer has already been patched
@@ -80,6 +80,23 @@ def patch_trainer():
                 LOGGER.info(f"Added {len(new_svft_params)} new SVFT parameters to optimizer.")
             else:
                 LOGGER.info("SVFT parameters already in the optimizer group.")
+
+        # Collect all MuMoE parameters
+        mumoe_params = [
+            p for n, p in self.model.named_parameters()
+            if "ffn_block" in n and p.requires_grad
+        ]
+        
+        if mumoe_params:
+            LOGGER.info(f"Adding {len(mumoe_params)} MuMoE parameters to optimizer group.")
+            existing_params_in_group0 = set(id(p) for p in torch_optim.param_groups[0]['params'])
+            new_mumoe_params = [p for p in mumoe_params if id(p) not in existing_params_in_group0]
+
+            if new_mumoe_params:
+                torch_optim.param_groups[0]["params"].extend(new_mumoe_params)
+                LOGGER.info(f"Added {len(new_mumoe_params)} new MuMoE parameters to optimizer.")
+            else:
+                LOGGER.info("MuMoE parameters already in the optimizer group.")
 
     # Override Fairseq’s builder
     Trainer._build_optimizer = _build_optimizer_with_pefts

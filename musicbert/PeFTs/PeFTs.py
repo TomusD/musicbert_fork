@@ -55,6 +55,8 @@ def inject_vera(
     module: nn.Module,
     rank: int,
     dropout: float,
+    vera_A: nn.ParameterDict,
+    vera_B: nn.ParameterDict,
     target_modules: Sequence[str],
     module_path: str = ""
 ):
@@ -73,40 +75,20 @@ def inject_vera(
             )
             
             if should_wrap:
-                # Create unique VeraLinear layer with its own A and B
-                in_features = child.in_features
-                
-                # 1. Create the random tensors
-                vera_A_tensor = torch.empty(rank, in_features, device=child.weight.device)
-                vera_B_tensor = torch.empty(in_features, rank, device=child.weight.device)
-
-                # 2. Initialize them with Kaiming Uniform
-                torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
-                torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
-
-                # 3. Place them in ParameterDicts as required by VeraLinear
-                vera_A_dict = nn.ParameterDict({
-                    "default": nn.Parameter(vera_A_tensor, requires_grad=False)
-                })
-                vera_B_dict = nn.ParameterDict({
-                    "default": nn.Parameter(vera_B_tensor, requires_grad=False)
-                })
-
-                # 4. Create the VeraLinear layer with its own unique A and B
                 vera_layer = VeraLinear(
                     base_layer=child,
                     adapter_name="default",
                     r=rank,
                     vera_dropout=dropout,
-                    fan_in_fan_out=False,
-                    vera_A=vera_A_dict,
-                    vera_B=vera_B_dict,
+                    vera_A=vera_A,
+                    vera_B=vera_B,
+                    fan_in_fan_out=False
                 )
                 setattr(module, child_name, vera_layer)
                 replacements_made += 1
         
         # Recurse into child modules
-        replacements_made += inject_vera(child, rank, dropout, 
+        replacements_made += inject_vera(child, rank, dropout, vera_A, vera_B,
                                          target_modules, current_path)
     
     return replacements_made

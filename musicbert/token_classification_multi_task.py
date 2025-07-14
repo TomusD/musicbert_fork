@@ -36,6 +36,7 @@ import musicbert.PeFTs.MHA_forward_patch as MHA_forward_patch
 from musicbert.token_classification import RobertaSequenceTaggingHead
 from musicbert.PeFTs.PeFTs import inject_lora, inject_vera
 from musicbert.PeFTs.svft_layers import LinearWithSVFT, get_target_modules_list, create_and_replace_modules
+from musicbert.PeFTs.MuMoE import inject_mumoe
 
 LOGGER = logging.getLogger(__name__)
 
@@ -532,6 +533,10 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
         parser.add_argument("--svft-off-diag", type=int, default=1, help="number of off-diagonals to use in SVFT layers for matrix M (default: 1)")
         parser.add_argument("--svft-pattern", type=str, default="banded", choices=["banded", "random", "top_k"], help="Sparsity pattern for SVFT's M matrix. (Using banded with off_diag=1 simulates SVFT-plain)")
         parser.add_argument("--svft-rank", type=int, default=768, help="SVFT rank (default full rank)")
+        parser.add_argument("--use-mumoe", action="store_true", help="Replace unfrozen layers FFNs with MuMoE blocks")
+        parser.add_argument("--mumoe-method", type=str, default="CP", choices=["CP", "TR"], help="Which MuMoE factorization method to use")
+        parser.add_argument("--mumoe-layers", type=int, default=3, help="Number of layers to replace with MuMoE")
+        parser.add_argument("--mumoe-num-experts", type=int, default=256, help="Number of experts for MuMoE")
 
     def __init__(self, args, data_dictionary, label_dictionaries):
         if args.msdebug:
@@ -820,6 +825,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             LOGGER.info(f"Unfroze {lora_params_unfrozen} LoRA parameters.")
 
             # Debugging which LoRA architecture is being used and how many trainable parameters
+            # TODO: Maybe needs small fix
             if args.rslora:
                 LOGGER.info("Using rsLoRA")
             if args.dora:
@@ -836,30 +842,30 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             vera_target_modules = ["q_proj", "k_proj", "v_proj", "out_proj"]
             LOGGER.info("Using VeRA")
 
-            # # VeRA needs 2 frozen matrices A and B so I initialize them here
-            # hidden_size = model.encoder.sentence_encoder.layers[0].self_attn.embed_dim
+            # VeRA needs 2 frozen matrices A and B so I initialize them here
+            hidden_size = model.encoder.sentence_encoder.layers[0].self_attn.embed_dim
 
-            # # Initialize the VeRA tensors A and B
-            # vera_A_tensor = torch.empty(args.vera_rank, hidden_size)
-            # vera_B_tensor = torch.empty(hidden_size, args.vera_rank)
+            # Initialize the VeRA tensors A and B
+            vera_A_tensor = torch.empty(args.vera_rank, hidden_size)
+            vera_B_tensor = torch.empty(hidden_size, args.vera_rank)
 
-            # # Use Kaiming uniform initialization for VeRA matrices since worked best in the paper
-            # torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
-            # torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
+            # Use Kaiming uniform initialization for VeRA matrices since worked best in the paper
+            torch.nn.init.kaiming_uniform_(vera_A_tensor, a=math.sqrt(5))
+            torch.nn.init.kaiming_uniform_(vera_B_tensor, a=math.sqrt(5))
 
-            # # Create the VeRA frozen matrices
-            # vera_A_param_dict = nn.ParameterDict({
-            #     "default": nn.Parameter(vera_A_tensor, requires_grad=False)
-            # })
-            # vera_B_param_dict = nn.ParameterDict({
-            #     "default": nn.Parameter(vera_B_tensor, requires_grad=False)
-            # })
-            # LOGGER.info(f"Created shared VeRA matrices within ModuleDict: A{tuple(vera_A_tensor.shape)}, B{tuple(vera_B_tensor.shape)}")
+            # Create the VeRA frozen matrices
+            vera_A_param_dict = nn.ParameterDict({
+                "default": nn.Parameter(vera_A_tensor, requires_grad=False)
+            })
+            vera_B_param_dict = nn.ParameterDict({
+                "default": nn.Parameter(vera_B_tensor, requires_grad=False)
+            })
+            LOGGER.info(f"Created shared VeRA matrices within ModuleDict: A{tuple(vera_A_tensor.shape)}, B{tuple(vera_B_tensor.shape)}")
 
             replacements_made = inject_vera(
                 module=model.encoder.sentence_encoder,
-                #vera_A=vera_A_param_dict,
-                #vera_B=vera_B_param_dict,
+                vera_A=vera_A_param_dict,
+                vera_B=vera_B_param_dict,
                 rank=args.vera_rank,
                 dropout=args.vera_dropout,
                 target_modules=vera_target_modules
@@ -874,6 +880,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             LOGGER.info(f"Unfroze {vera_params_unfrozen} VeRA trainable parameters.")
 
             # Debugging VeRA layers
+            # TODO: Maybe needs small fix
             vera_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
             LOGGER.info(f"VeRA trainable parameters: {len(vera_param_names)} ")
             for name, param in model.named_parameters():
@@ -908,6 +915,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             create_and_replace_modules(model.encoder.sentence_encoder, target_modules_list, create_svft_fn)
 
             # Debugging SVFT layers
+            # TODO: Maybe needs small fix
             trainable_svft_params = 0
             for name, param in model.named_parameters():
                 if "svft_" in name and param.requires_grad:
@@ -926,6 +934,34 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 LOGGER.info(name)
 
 
+        if args.use_mumoe:
+            total_layers = len(model.encoder.sentence_encoder.layers)
+            unfrozen_layers = total_layers - args.freeze_layers
+            num_to_replace = min(args.mumoe_layers, unfrozen_layers)
+            
+            if num_to_replace <= 0:
+                raise ValueError(f"No unfrozen layers available to replace.")
+
+            target_indices = list(range(total_layers - num_to_replace, total_layers))
+
+            mumoe_params = {
+                'moe_method': args.mumoe_method,
+                'num_experts': args.mumoe_num_experts
+            }
+            inject_mumoe(model, target_indices, mumoe_params)
+            
+            # Debugging MuMoE layers
+            # TODO: Maybe needs small fix
+            mumoe_param_names = [n for n, _ in model.named_parameters() if "ffn_block" in n]
+            LOGGER.info(f"MuMoE trainable parameters: {len(mumoe_param_names)} ")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
+
+            mumoe_frozen_param_names = [n for n, p in model.named_parameters() if "ffn_block" in n and not p.requires_grad]
+            LOGGER.info(f"MuMoE frozen parameters: {len(mumoe_frozen_param_names)}")
+            for name in mumoe_frozen_param_names:
+                LOGGER.info(name)
 
 
         # Logging trainable parameters after all PeFTs modifications
