@@ -248,7 +248,6 @@ class MuMoETransformerLayer(nn.Module):
             cp_rank = math.ceil((original_params - gating_params) / per_rank_cost)
             ranks = cp_rank
             print(f"Calculated CPMuMoE rank: {ranks}")
-        # TODO: EXPLAINATION YET TO BE DONE
         if mumoe_params['moe_method'] == 'TR':
             moe_class = TRMuMoE
             r1 = r2 = 4

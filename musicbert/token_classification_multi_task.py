@@ -933,7 +933,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             for name in svft_frozen_param_names:
                 LOGGER.info(name)
 
-
+        # (Triantafulloy) Inject MuMoE layers
         if args.use_mumoe:
             total_layers = len(model.encoder.sentence_encoder.layers)
             unfrozen_layers = total_layers - args.freeze_layers

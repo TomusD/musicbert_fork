@@ -69,6 +69,7 @@ def parse_args():
     parser.add_argument("--interpretation-data-path", type=str, default=None,
                         help="Save detailed coefficient and metadata to this path as a CSV.")
     parser.add_argument("--layer-coeffs", type=int, default=11,help="The layer index to extract MuMoE coefficients from. Default is 11, which is the last layer in the encoder.")
+    parser.add_argument("--zero-out-expert", type=int, default=None, help="If provided, all coefficients for this expert will be set to 0.")
 
     args = parser.parse_args()
     return args
@@ -308,7 +309,14 @@ def main():
 
                 if "MuMoETransformerLayer" in type(layer).__name__ and hasattr(layer, 'ffn_block') and hasattr(layer.ffn_block, 'a'):
                     coeffs_tensor = layer.ffn_block.a[0]
-                    #print(f"MuMoE coefficients tensor shape: {coeffs_tensor.shape} for batch: {batch_i}")
+
+                    # # Zero out the specified expert if requested
+                    # if args.zero_out_expert is not None:
+                    #     if args.zero_out_expert < coeffs_tensor.size(2):
+                    #         coeffs_tensor[:, :, args.zero_out_expert] = 0.0
+                    #         LOGGER.info(f"Zeroed out coefficients for expert {args.zero_out_expert} in layer {args.layer_coeffs}")
+                    #     else:
+                    #         LOGGER.warning(f"Expert index {args.zero_out_expert} is out of range. Model has {coeffs_tensor.size(2)} experts.")
                 
                     # Process each sample in the current batch
                     for batch_sample_idx in range(sample_ids_in_batch.size(0)):
@@ -317,7 +325,6 @@ def main():
                         min_bar_sample = float('inf')
                         bar_to_timesig = {} 
                         seq_len_for_batch = src_tokens.size(1)
-                        #print("Sequence length for batch:", seq_len_for_batch)
 
                         # First pass over tokens of current sample j to parse events and find its min_bar
                         for start_token_idx in range(0, seq_len_for_batch, num_tokens):                      
@@ -417,7 +424,8 @@ def main():
                     if args.interpretation_data_path and interpret_score:
                         LOGGER.info(f"Saving expert's coefficients data for {len(interpret_score)} notes in batch {batch_i}...")
                         batch_df = pd.DataFrame(interpret_score)
-                        bach_path = os.path.join(os.path.dirname(args.interpretation_data_path), f"{mumoe_method}_interpretation_data_{n_experts}.csv")
+                        zero_expert_index = f"_zero_exp_{args.zero_out_expert}" if args.zero_out_expert is not None else ""
+                        bach_path = os.path.join(os.path.dirname(args.interpretation_data_path), f"{mumoe_method}_interpretation_data_{n_experts}_layer_{args.layer_coeffs}{zero_expert_index}.csv")
                         os.makedirs(os.path.dirname(bach_path), exist_ok=True)
                         file_exists = os.path.isfile(bach_path)
                         batch_df.to_csv(bach_path, mode='a' if file_exists else 'w', header=not file_exists, index=False)
