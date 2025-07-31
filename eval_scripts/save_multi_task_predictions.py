@@ -418,6 +418,13 @@ def main():
 
                             for expert_idx in range(coeffs_tensor.size(2)): # num_experts
                                 note[f'coeff_expert_{expert_idx}'] = event_coeffs[expert_idx].item()
+
+                            # Get predictions to map with tokens
+                            for logits, target_name in zip(all_logits, target_names):
+                                preds = logits.argmax(dim=-1).detach().cpu().numpy()
+                                if batch_sample_idx < preds.shape[0] and note_index < preds.shape[1]:
+                                    note[f'{target_name}_pred_class'] = int(preds[batch_sample_idx, note_index])
+                                    note[f'{target_name}_pred_label'] = label_dictionaries[target_name].string([preds[batch_sample_idx, note_index]])
                         
                             interpret_score.append(note)
 
