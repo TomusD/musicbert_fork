@@ -69,7 +69,8 @@ def parse_args():
     parser.add_argument("--interpretation-data-path", type=str, default=None,
                         help="Save detailed coefficient and metadata to this path as a CSV.")
     parser.add_argument("--layer-coeffs", type=int, default=11,help="The layer index to extract MuMoE coefficients from. Default is 11, which is the last layer in the encoder.")
-    parser.add_argument("--zero-out-expert", type=int, default=None, help="If provided, all coefficients for this expert will be set to 0.")
+    # TODO: Not yet implemented
+    #parser.add_argument("--zero-out-expert", type=int, default=None, help="If provided, all coefficients for this expert will be set to 0.")
 
     args = parser.parse_args()
     return args
@@ -310,6 +311,7 @@ def main():
                 if "MuMoETransformerLayer" in type(layer).__name__ and hasattr(layer, 'ffn_block') and hasattr(layer.ffn_block, 'a'):
                     coeffs_tensor = layer.ffn_block.a[0]
 
+                    # TODO: Not yet implemented
                     # # Zero out the specified expert if requested
                     # if args.zero_out_expert is not None:
                     #     if args.zero_out_expert < coeffs_tensor.size(2):
@@ -395,6 +397,9 @@ def main():
                             tempo_token = properties.get('tempo')
                             tempo = 2 ** (tempo_token / 12) * 16
 
+                            # Duration, Measure, Global Measure, Offset, Global Offset, Tempo, Time Signature can be dropped. 
+                            # OctupleMidi encoding is lossy so they are not perfectly aligned with the original score.
+                            # We keep them here for reference.
                             note = {
                                 'sample_id': sample_id,
                                 'token_index': k,

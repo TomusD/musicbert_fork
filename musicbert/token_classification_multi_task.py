@@ -33,6 +33,7 @@ from torch import nn
 import musicbert.monkeypatch_load_checkpoint
 import musicbert.state_dict_patch
 import musicbert.PeFTs.MHA_forward_patch as MHA_forward_patch
+import musicbert.PeFTs.optimizer_patch as optimizer_patch
 from musicbert.token_classification import RobertaSequenceTaggingHead
 from musicbert.PeFTs.PeFTs import inject_lora, inject_vera
 from musicbert.PeFTs.svft_layers import LinearWithSVFT, get_target_modules_list, create_and_replace_modules
@@ -518,16 +519,18 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             help="provide the name of targets for which we should log f1/etc. "
             "for each label individually",
         )
+        # (Triantafyllou) PeFTs/MoE arguments
+        # Composite learning rate had not straightforward implementation, thus not yet implemented.
+        parser.add_argument( "--use-pefts", action="store_true", help="use patched forward for LoRA (default: False, use fairseq's default forward pass)")
+        parser.add_argument("--use-custom-optimizer", action="store_true", help="Use patched custom optimizer to check if all PeFT parameters are being optimized (default: False, use fairseq's default optimizer)")
         parser.add_argument("--lora-rank",   type=int, default=0,help="LoRA rank (0 = no LoRA)")
-        parser.add_argument("--lora-alpha",  type=int, default=16, help="LoRA scaling (alpha)")
-        parser.add_argument("--lora-lr", type=float, default=0.0, help="LoRA learning rate (default: 0.0 = use base LR)")
+        parser.add_argument("--lora-alpha",  type=int, default=1, help="LoRA scaling (alpha)")
+        parser.add_argument("--lora-lr", type=float, default=0.0, help="LoRA learning rate (default: 0.0 = use base LR) not implemented yet")
         parser.add_argument("--lora-dropout",type=float, default=0.0, help="LoRA dropout probability")
         parser.add_argument("--rslora", action="store_true", help="use rsLoRA")
         parser.add_argument("--dora", action="store_true", help="use DoRA")
-        parser.add_argument( "--use-pefts", action="store_true",
-                            help="use patched forward for LoRA (default: False, use fairseq's default forward pass)")
         parser.add_argument("--vera-rank", type=int, default=0, help="VeRA rank (0 = no VeRA)")
-        parser.add_argument("--vera-lr", type=float, default=0.0, help="VeRA learning rate (default: 0.0 = use base LR)")
+        parser.add_argument("--vera-lr", type=float, default=0.0, help="VeRA learning rate (default: 0.0 = use base LR) not implemented yet")
         parser.add_argument("--vera-dropout", type=float, default=0.0, help="VeRA dropout probability")
         parser.add_argument("--use-svft", action="store_true", help="use SVFT layers instead of linear layers (default: False)")
         parser.add_argument("--svft-off-diag", type=int, default=1, help="number of off-diagonals to use in SVFT layers for matrix M (default: 1)")
@@ -553,6 +556,7 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             sys.excepthook = custom_excepthook
         super().__init__(args)
         MHA_forward_patch.set_use_pefts(args.use_pefts)
+        optimizer_patch.set_use_custom_optimizer(args.use_custom_optimizer)
         self.dictionary = data_dictionary
         self._label_dictionaries = tuple(label_dictionaries)
 
@@ -825,16 +829,27 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             LOGGER.info(f"Unfroze {lora_params_unfrozen} LoRA parameters.")
 
             # Debugging which LoRA architecture is being used and how many trainable parameters
-            # TODO: Maybe needs small fix
             if args.rslora:
                 LOGGER.info("Using rsLoRA")
             if args.dora:
                 LOGGER.info("Using DoRA")
             if args.lora_rank > 0 and not args.rslora and not args.dora:
                 LOGGER.info("Using Vanilla LoRA ") 
-            LOGGER.info("LoRA trainable parameters:")
+
+            # Debugging LoRA/DoRA layers
+            all_params = [n for n, _ in model.named_parameters()]
+            LOGGER.info(f"All parameters: {len(all_params)} ")
+
+            lora_param_names = [n for n, p in model.named_parameters() if p.requires_grad]
+            LOGGER.info(f"LoRA/DoRA trainable parameters: {len(lora_param_names)} ")
             for name, param in model.named_parameters():
-                if param.requires_grad or "lora_" in name:
+                if param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
+
+            frozen_lora_param_names = [n for n, p in model.named_parameters() if not p.requires_grad]
+            LOGGER.info(f"LoRA/DoRA frozen parameters: {len(frozen_lora_param_names)} ")
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
         # (Triantafulloy) Inject VeRA adapters
@@ -871,6 +886,8 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                 target_modules=vera_target_modules
             )
 
+            LOGGER.info(f"Made {replacements_made} VeRA replacements.")
+
             # Unfreeze only the trainable parts of VeRA
             vera_params_unfrozen = 0
             for name, param in model.named_parameters():
@@ -880,17 +897,20 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             LOGGER.info(f"Unfroze {vera_params_unfrozen} VeRA trainable parameters.")
 
             # Debugging VeRA layers
-            # TODO: Maybe needs small fix
-            vera_param_names = [n for n, _ in model.named_parameters() if "vera_" in n]
+            all_params = [n for n, _ in model.named_parameters()]
+            LOGGER.info(f"All parameters: {len(all_params)} ")
+
+            vera_param_names = [n for n, p in model.named_parameters() if p.requires_grad]
             LOGGER.info(f"VeRA trainable parameters: {len(vera_param_names)} ")
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
-            vera_frozen_param_names = [n for n, p in model.named_parameters() if "vera_" in n and not p.requires_grad]
-            LOGGER.info(f"VeRA frozen parameters: {len(vera_frozen_param_names)} ")
-            for name in vera_frozen_param_names:
-                LOGGER.info(name)
+            frozen_vera_param_names = [n for n, p in model.named_parameters() if not p.requires_grad]
+            LOGGER.info(f"VeRA frozen parameters: {len(frozen_vera_param_names)} ")
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
 
         # (Triantafulloy) Inject SVFT Layers
         if args.use_svft:
@@ -915,23 +935,20 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             create_and_replace_modules(model.encoder.sentence_encoder, target_modules_list, create_svft_fn)
 
             # Debugging SVFT layers
-            # TODO: Maybe needs small fix
-            trainable_svft_params = 0
-            for name, param in model.named_parameters():
-                if "svft_" in name and param.requires_grad:
-                    trainable_svft_params += 1
-            LOGGER.info(f"SVFT injection complete. Found {trainable_svft_params} trainable SVFT parameters.")
+            all_params = [n for n, _ in model.named_parameters()]
+            LOGGER.info(f"All parameters: {len(all_params)} ")
 
-            svft_param_names = [n for n, _ in model.named_parameters() if "svft_" in n]
+            svft_param_names = [n for n, p in model.named_parameters() if p.requires_grad]
             LOGGER.info(f"SVFT trainable parameters: {len(svft_param_names)} ")
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
-            svft_frozen_param_names = [n for n, p in model.named_parameters() if "svft_" in n and not p.requires_grad]
-            LOGGER.info(f"SVFT frozen parameters: {len(svft_frozen_param_names)}")
-            for name in svft_frozen_param_names:
-                LOGGER.info(name)
+            frozen_svft_param_names = [n for n, p in model.named_parameters() if not p.requires_grad]
+            LOGGER.info(f"SVFT frozen parameters: {len(frozen_svft_param_names)} ")
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
 
         # (Triantafulloy) Inject MuMoE layers
         if args.use_mumoe:
@@ -951,21 +968,25 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             inject_mumoe(model, target_indices, mumoe_params)
             
             # Debugging MuMoE layers
-            # TODO: Maybe needs small fix
-            mumoe_param_names = [n for n, _ in model.named_parameters() if "ffn_block" in n]
+            all_params = [n for n, _ in model.named_parameters()]
+            LOGGER.info(f"All parameters: {len(all_params)} ")
+
+            mumoe_param_names = [n for n, p in model.named_parameters() if p.requires_grad]
             LOGGER.info(f"MuMoE trainable parameters: {len(mumoe_param_names)} ")
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     LOGGER.info(f"{name} - {param.shape}")
 
-            mumoe_frozen_param_names = [n for n, p in model.named_parameters() if "ffn_block" in n and not p.requires_grad]
-            LOGGER.info(f"MuMoE frozen parameters: {len(mumoe_frozen_param_names)}")
-            for name in mumoe_frozen_param_names:
-                LOGGER.info(name)
-
+            frozen_mumoe_param_names = [n for n, p in model.named_parameters() if not p.requires_grad]
+            LOGGER.info(f"MuMoE frozen parameters: {len(frozen_mumoe_param_names)} ")
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    LOGGER.info(f"{name} - {param.shape}")
+            
 
         # Logging trainable parameters after all PeFTs modifications
-        LOGGER.info("Final trainable parameters in the model:")
+        final_param_names = [n for n, p in model.named_parameters() if p.requires_grad]
+        LOGGER.info(f"Final trainable parameters in the model: {len(final_param_names)} ")
         for name, param in model.named_parameters():
             if param.requires_grad:
                 LOGGER.info(f"{name} - {param.shape} - Trainable")

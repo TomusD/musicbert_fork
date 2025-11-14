@@ -1,9 +1,27 @@
+"""
+(Triantafulloy)
+Patch Fairseq's Optimizer to include PeFT parameters that may be missed by the default optimizer builder.
+In most cases, Fairseq's default optimizer builder works fine
+"""
+
+
 import logging
+from fairseq.trainer import Trainer
 
 LOGGER = logging.getLogger(__name__)
 
-from fairseq.trainer import Trainer
-# TODO: Make this optional.
+# (Triantafulloy) Added this flag to control whether to use custom optimizer or not
+_USE_CUSTOM_OPTIMIZER = False
+def set_use_custom_optimizer(use_custom_optimizer: bool):
+    global _USE_CUSTOM_OPTIMIZER
+    _USE_CUSTOM_OPTIMIZER = use_custom_optimizer
+
+    if _USE_CUSTOM_OPTIMIZER:
+        LOGGER.info("Enabling custom optimizer - applying patch.")
+        patch_trainer()
+    else:
+        LOGGER.info("Custom optimizer disabled - using Fairseq default.")
+
 def patch_trainer():
 
     # Check if the Trainer has already been patched
@@ -36,16 +54,16 @@ def patch_trainer():
         ]
 
         if lora_params:
-            LOGGER.info(f"Adding {len(lora_params)} LoRA parameters to optimizer group.")
+            LOGGER.info(f"Adding {len(lora_params)} LoRA/DoRA parameters to optimizer group.")
             # Check if these params are already in an optimizer group
             existing_params_in_group0 = set(id(p) for p in torch_optim.param_groups[0]['params'])
             new_lora_params = [p for p in lora_params if id(p) not in existing_params_in_group0]
 
             if new_lora_params:
                 torch_optim.param_groups[0]["params"].extend(new_lora_params)
-                LOGGER.info(f"Added {len(new_lora_params)} new LoRA parameters to optimizer.")
+                LOGGER.info(f"Added {len(new_lora_params)} new LoRA/DoRA parameters to optimizer.")
             else:
-                LOGGER.info("LoRA parameters already in the optimizer group.")
+                LOGGER.info("LoRA/DoRA parameters already in the optimizer group.")
 
         # Collect all VeRA parameters
         vera_params = [
@@ -84,7 +102,7 @@ def patch_trainer():
         # Collect all MuMoE parameters
         mumoe_params = [
             p for n, p in self.model.named_parameters()
-            if "ffn_block" in n and p.requires_grad
+            if p.requires_grad
         ]
         
         if mumoe_params:
