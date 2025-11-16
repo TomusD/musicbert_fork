@@ -593,13 +593,13 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
                     else:
                         weights[class_idx] = 1.0
                 self.class_weights_list.append(weights)
-                # --- DEBUG PRINT STATEMENT ---
+                # DEBUG: print some info about the weights
                 if self.args.use_isns_weights:
                     LOGGER.info(f"DEBUG: Task {i}:")
                     LOGGER.info(f"Number of output classes: {num_output_classes_for_task_head}")
                     LOGGER.info(f"Total {len(weights)} weights")
                     LOGGER.info(f"Calculated ISNS weights: {weights[:20]}")
-                # --- END DEBUG ---
+
 
         self.num_targets = len(args.num_classes)
         if args.target_names is None:
@@ -1001,20 +1001,6 @@ class MultiTaskSequenceTaggingTask(FairseqTask):
             num_classes=num_classes,
             sequence_tagging=True,
         )
-
-        # # Composite optimizer groups for base and PeFTs parameters
-        # LOGGER.info("Assigning parameters to optimizer groups ('base' and 'vera')...")
-        # for name, p in model.named_parameters():
-        #     if not p.requires_grad:
-        #         continue
-            
-        #     # Assign trainable parameters to the each group
-        #     if "vera_" in name:
-        #         p.param_group = "vera"
-        #     elif "lora_" in name:
-        #         p.param_group = "lora"
-        #     else:
-        #         p.param_group = "base"
 
         return model
 

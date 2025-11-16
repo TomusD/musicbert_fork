@@ -69,8 +69,6 @@ def parse_args():
     parser.add_argument("--interpretation-data-path", type=str, default=None,
                         help="Save detailed coefficient and metadata to this path as a CSV.")
     parser.add_argument("--layer-coeffs", type=int, default=11,help="The layer index to extract MuMoE coefficients from. Default is 11, which is the last layer in the encoder.")
-    # TODO: Not yet implemented
-    #parser.add_argument("--zero-out-expert", type=int, default=None, help="If provided, all coefficients for this expert will be set to 0.")
 
     args = parser.parse_args()
     return args
@@ -248,9 +246,6 @@ def main():
 
     try:
         for batch_i, i in enumerate(range(0, n_examples, args.batch_size)):
-            # TODO: remove this after debugging
-            #if batch_i < 155:
-                #continue
             samples = [
                 dataset[j] for j in range(i, min(n_examples, i + args.batch_size))
             ]
@@ -310,15 +305,6 @@ def main():
 
                 if "MuMoETransformerLayer" in type(layer).__name__ and hasattr(layer, 'ffn_block') and hasattr(layer.ffn_block, 'a'):
                     coeffs_tensor = layer.ffn_block.a[0]
-
-                    # TODO: Not yet implemented
-                    # # Zero out the specified expert if requested
-                    # if args.zero_out_expert is not None:
-                    #     if args.zero_out_expert < coeffs_tensor.size(2):
-                    #         coeffs_tensor[:, :, args.zero_out_expert] = 0.0
-                    #         LOGGER.info(f"Zeroed out coefficients for expert {args.zero_out_expert} in layer {args.layer_coeffs}")
-                    #     else:
-                    #         LOGGER.warning(f"Expert index {args.zero_out_expert} is out of range. Model has {coeffs_tensor.size(2)} experts.")
                 
                     # Process each sample in the current batch
                     for batch_sample_idx in range(sample_ids_in_batch.size(0)):
@@ -397,7 +383,7 @@ def main():
                             tempo_token = properties.get('tempo')
                             tempo = 2 ** (tempo_token / 12) * 16
 
-                            # Duration, Measure, Global Measure, Offset, Global Offset, Tempo, Time Signature can be dropped. 
+                            # Measure, Global Measure, Offset, Global Offset, Tempo, Time Signature can be dropped. 
                             # OctupleMidi encoding is lossy so they are not perfectly aligned with the original score.
                             # We keep them here for reference.
                             note = {
