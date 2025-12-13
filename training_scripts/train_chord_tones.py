@@ -41,7 +41,7 @@ else:
     N_GPU_LOCAL = 0
     CPU_FLAG = "--cpu"
 
-TOTAL_UPDATES = 125000
+TOTAL_UPDATES = 50000
 WARMUP_UPDATES = 25000
 
 DEFAULT_CHECKPOINT = os.getenv(
@@ -255,7 +255,6 @@ else:
                 "--optimizer adam",
                 "--adam-betas (0.9,0.98)",
                 "--adam-eps 1e-6",
-                #(Triantafyllou) added clip-norm
                 "--clip-norm 0.0",
                 "--log-format simple",
                 "--find-unused-parameters",

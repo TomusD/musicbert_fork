@@ -253,7 +253,7 @@ class MuMoETransformerLayer(nn.Module):
             r1 = r2 = 4
             fixed_cost = (r1 * num_experts * r2) * 2
             per_rank_cost = (r2 * input_dim + out_dim * r1) + (r2 * out_dim + input_dim * r1)
-            tr_rank_r3 = math.ceil((original_params - (2 * gating_params) - fixed_cost) / per_rank_cost)
+            tr_rank_r3 = math.ceil((original_params - gating_params - fixed_cost) / per_rank_cost)
             ranks = [[r1, -1, r2], [r2, -1, tr_rank_r3], [tr_rank_r3, -1, r1]]
             print(f"Calculated TRMuMoE ranks: r1=4, r2=4, r3={tr_rank_r3}")
 
