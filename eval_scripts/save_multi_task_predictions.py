@@ -422,8 +422,7 @@ def main():
                     if args.interpretation_data_path and interpret_score:
                         LOGGER.info(f"Saving expert's coefficients data for {len(interpret_score)} notes in batch {batch_i}...")
                         batch_df = pd.DataFrame(interpret_score)
-                        zero_expert_index = f"_zero_exp_{args.zero_out_expert}" if args.zero_out_expert is not None else ""
-                        bach_path = os.path.join(os.path.dirname(args.interpretation_data_path), f"{mumoe_method}_interpretation_data_{n_experts}_layer_{args.layer_coeffs}{zero_expert_index}.csv")
+                        bach_path = os.path.join(os.path.dirname(args.interpretation_data_path), f"{mumoe_method}_interpretation_data_{n_experts}_layer_{args.layer_coeffs}.csv")
                         os.makedirs(os.path.dirname(bach_path), exist_ok=True)
                         file_exists = os.path.isfile(bach_path)
                         batch_df.to_csv(bach_path, mode='a' if file_exists else 'w', header=not file_exists, index=False)
