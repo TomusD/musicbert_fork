@@ -194,7 +194,8 @@ def main():
         for idx, row in metadata_df.iterrows():
             df_indices_str = row['df_indices']
             indices_str = df_indices_str.strip('[]')
-            indices = [int(i.strip()) for i in indices_str.split(',')]
+            # (Triantafyllou) Convert string indices to a list of integers and counter float representations
+            indices = [int(float(i.strip())) for i in indices_str.split(',')]
             note_indices[idx] = indices
         LOGGER.info(f"Extracted note indices for {len(note_indices)} samples")
     except FileNotFoundError:
